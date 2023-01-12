@@ -24,6 +24,13 @@ import typing
 
 
 class Formatter:
+    """Used to format errors in `ErrorHandler`.
+    
+    Methods can be overwritten in a subclass, and methods for additional exceptions can be added by
+    created a method called `custom_<excname>` where `<excname>` is the name of the exception. It
+    must take one argument (the exception) and, similar to the other methods, must return a string.
+    
+    """
     def __init__(self) -> None:
         self.error_prefix = "*Error: "
         self.error_postfix = "*"
@@ -239,6 +246,9 @@ class Formatter:
 
 
 class ErrorHandler:
+    """A class used to handle errors raised by `...Check`.
+    
+    """
     def __init__(self, ids: typing.Iterable[typing.Iterable[int]],
                  attach_to: object = None, formatter: Formatter = ...) -> None:
         """
@@ -247,6 +257,13 @@ class ErrorHandler:
         ids : iterable of iterable of int
             A 2D iterable where each bottom-level iterable contains a channel ID and optionally one
             or more users (as user IDs) to mention during the handling of unknown errors.
+        attach_to : object
+            If defined, an attribute named `__dpy_check__` will be added to the given object with
+            a value of this instance. It can be reacquired through normal means, or with the
+            `ErrorHandler.get` static method.
+        formatter : Formatter
+            If defined, the given formatter instance will be used. Otherwise, a new instance will
+            be created.
         
         """
         if attach_to:
@@ -340,12 +357,28 @@ class ErrorHandler:
         else:
             utx: types.utx = args[1]
             exc = args[2]
-
+        exc_name = exc.__class__.__name__
         sender = utils.get_sender(utx)
 
-        # handle non-check exception
-        if not isinstance(exc, (commands.CheckFailure,
-                                app_commands.CheckFailure)):
+        # formats an error embed and sends to the user
+        async def send(content: str) -> None:
+            embed = discord.Embed(description=f"{self.formatter.error_prefix}{content}"
+                                              f"{self.formatter.error_postfix}",
+                                  color=constants.EMBED_COLOR__NEG)
+        
+            await sender(embed=embed)
+            return
+
+        # non-check exception with content func present in formatter
+        content_func = getattr(self.formatter, f"custom_{exc_name}", None)
+        if content_func:
+            try:
+                return await send(content_func(exc))
+            except Exception:
+                pass
+        
+        # non-check exception
+        if not isinstance(exc, (commands.CheckFailure, app_commands.CheckFailure)):
             error_embed, data = self.formatter.__missing__(utx, exc.original)
             
             # error embed (sent to user)
@@ -365,15 +398,13 @@ class ErrorHandler:
                     await asyncio.sleep(0.1) # so as to not overload the API
             return
         
-        if hasattr(self.formatter, exc.__class__.__name__):
-            exc_args = exc.args[0]
-            content = getattr(self.formatter, exc.__class__.__name__)(*exc_args)
-        else:
-            content = self.formatter.Generic()
-        embed = discord.Embed(description=f"{self.formatter.error_prefix}"
-                                          f"{content}"
-                                          f"{self.formatter.error_postfix}",
-                              color=constants.EMBED_COLOR__NEG)
+        # check exception with content func present in formatter
+        content_func = getattr(self.formatter, exc_name, None)
+        if content_func:
+            try:
+                return await send(content_func(*exc.args[0]))
+            except Exception:
+                pass
         
-        await sender(embed=embed)
-        return
+        # check exception with no content func present in formatter
+        return await send(self.formatter.Generic())
