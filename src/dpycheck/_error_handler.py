@@ -27,8 +27,10 @@ class Formatter:
     """Used to format errors in `ErrorHandler`.
     
     Methods can be overwritten in a subclass, and methods for additional exceptions can be added by
-    created a method called `custom_<excname>` where `<excname>` is the name of the exception. It
+    creating a method called `custom_<excname>` where `<excname>` is the name of the exception. It
     must take one argument (the exception) and, similar to the other methods, must return a string.
+    Any exception with `<excname>` raised by the command will be caught, and the text returned from
+    the method will be sent to the command invoker in a formatted embed.
     
     """
     def __init__(self) -> None:
@@ -189,13 +191,12 @@ class Formatter:
                                              alt_exc, alt_seconds)
 
     def __missing__(self, utx: types.utx, exc: Exception
-                    ) -> tuple[discord.Embed, list[discord.Attachment | discord.Embed]]:
-        error_embed = discord.Embed(description="**An unknown error has "
-                                    "occured. The developers have been "
-                                    "notified and will attempt to fix the "
-                                    "issue as soon as possible. Thank you for "
-                                    "your patience.**",
-                                    color=constants.EMBED_COLOR__NEG)
+                    ) -> tuple[discord.Embed, discord.Embed, list[discord.Attachment
+                                                                  | discord.Embed]]:
+        error_embed = discord.Embed(description="**An unknown error has occured. The developers "
+                                                "have been notified and will attempt to fix the "
+                                                "issue as soon as possible. Thank you for your "
+                                                "patience.**", color=constants.EMBED_COLOR__NEG)
 
         # get exc info
         author = utils.get_author(utx)
@@ -221,13 +222,12 @@ class Formatter:
             tb = f"[!!!]{tb[-(4096 - len(info) - 22 - 5):]}" # less 5 for [!!!]
         
         content = f"```diff\n{info}``````yaml\n{tb}```"
+        info_embed = discord.Embed(description=content, color=constants.EMBED_COLOR__NEG)
         data = []
-        data.append(discord.Embed(description=content, color=constants.EMBED_COLOR__NEG))
 
         # add additional information
         addl: list = getattr(exc, "__dpy_check_additional_arguments__", None)
         if addl is not None:
-
             for v in addl:
                 if isinstance(v, str):
                     data.append(discord.Embed(description=f"```\n{v}```",
@@ -235,14 +235,13 @@ class Formatter:
                 elif isinstance(v, (discord.Attachment, discord.Embed)):
                     data.append(v)
                 elif isinstance(v, Exception):
-                    data.append(discord.Embed(description=f"```\nERROR: {str(v)}```",
+                    data.append(discord.Embed(description=f"```\nERROR: {v.__class__.__name__}: "
+                                                          f"{v}```",
                                               color=constants.EMBED_COLOR__NEG))
                 elif isinstance(v, dict):
-                    embed_dict = {"color": constants.EMBED_COLOR__NEG}
-                    embed_dict.update(v)
-                    data.append(discord.Embed.from_dict(embed_dict))
+                    data.append(discord.Embed.from_dict(v))
 
-        return error_embed, data
+        return error_embed, info_embed, data
 
 
 class ErrorHandler:
@@ -379,7 +378,8 @@ class ErrorHandler:
         
         # non-check exception
         if not isinstance(exc, (commands.CheckFailure, app_commands.CheckFailure)):
-            error_embed, data = self.formatter.__missing__(utx, exc.original)
+            error_embed, info_embed, addl = self.formatter.__missing__(utx, exc.original)
+            num_addl = len(addl)
             
             # error embed (sent to user)
             await sender(embed=error_embed)
@@ -388,13 +388,22 @@ class ErrorHandler:
             client = utils.get_client(utx)
             for channel_id, *mention_ids in self.ids:
                 channel = client.get_channel(channel_id)
+
+                # mentions (if included)
                 if mention_ids:
                     await channel.send(f"<@{'> <@'.join(str(id) for id in mention_ids)}>")
-                for value in data:
+
+                # main info embed
+                await channel.send(embed=info_embed)
+
+                # additional information
+                for i, value in enumerate(addl):
                     if isinstance(value, discord.Embed):
+                        value.title = f"Additional information {i+1} of {num_addl}"
                         await channel.send(embed=value)
                     elif isinstance(value, discord.Attachment):
-                        await channel.send(file=await value.to_file())
+                        await channel.send(f"**Additional information {i+1} of {num_addl}**",
+                                           file=await value.to_file())
                     await asyncio.sleep(0.1) # so as to not overload the API
             return
         
